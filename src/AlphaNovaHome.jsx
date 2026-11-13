@@ -31,6 +31,11 @@ import {
 const LOGO_LIGHT = '/brand/secondary-logo-light.png'
 const LOGO_DARK = '/brand/secondary-logo.png'
 
+// Video hero (scrub con lo scroll) generato con Magnific. Se manca o non si carica,
+// l'hero resta interamente in canvas (stesso concept). Desktop e senza reduced-motion.
+const HERO_VIDEO = '/media/hero-scrub.mp4'
+const HERO_POSTER = '/media/hero-poster.jpg'
+
 const CONTACT = {
   email: '', // TODO cliente: indirizzo email di contatto riservato
   phone: '', // TODO cliente: telefono (facoltativo)
@@ -265,6 +270,7 @@ const FIRST_INCOMING = NODES.map((_, i) => EDGES.findIndex(([, b]) => b === i))
 function HeroJourney() {
   const sec = useRef(null)
   const cv = useRef(null)
+  const vidRef = useRef(null)
   const txt = useRef(null)
   const c1 = useRef(null)
   const c2 = useRef(null)
@@ -289,6 +295,12 @@ function HeroJourney() {
     let raf = 0
     let visible = true
     let cur = reduce ? 0.7 : 0
+    const vid = vidRef.current
+    let videoOn = false
+    let seeking = false
+    let seekAt = 0
+    let blobUrl = ''
+    let vKey = ''
     let last = performance.now()
     const cache = new WeakMap()
 
@@ -328,6 +340,10 @@ function HeroJourney() {
       w = canvas.clientWidth
       h = canvas.clientHeight
       mobile = w < 768
+      if (mobile && videoOn) {
+        videoOn = false
+        vid.style.display = 'none'
+      }
       const dpr = Math.min(window.devicePixelRatio || 1, mobile ? 1.5 : 2)
       canvas.width = Math.round(w * dpr)
       canvas.height = Math.round(h * dpr)
@@ -335,6 +351,7 @@ function HeroJourney() {
       build()
       draw(cur, performance.now())
       applyText(cur)
+      applyVideo(cur)
     }
 
     // Stella a 4 punte con alone e flare
@@ -381,6 +398,7 @@ function HeroJourney() {
 
     function draw(p, now) {
       const t = reduce ? 0 : now / 1000
+      const V = videoOn // con il video attivo, stella e rotta arrivano dal video
       ctx.clearRect(0, 0, w, h)
 
       const A = ease(clamp(p / 0.25)) // avvicinamento della stella
@@ -456,7 +474,7 @@ function HeroJourney() {
       }
 
       // Rotta
-      const edgeAlpha = 1 - clamp(m / 0.6)
+      const edgeAlpha = V ? 0 : 1 - clamp(m / 0.6)
       if (edgeAlpha > 0.01) {
         EDGES.forEach(([a, b], k) => {
           const f = frac[k]
@@ -484,7 +502,7 @@ function HeroJourney() {
 
       // Nodi (aziende)
       for (let i = 1; i < nodes.length; i++) {
-        const L = lit[i]
+        const L = V ? lit[i] * m : lit[i]
         if (L <= 0.01) continue
         const R = (mobile ? 5 : 6.5) * L
         drawStar(pos[i].x, pos[i].y, R, L * (0.65 + 0.35 * (reduce ? 1 : 0.5 + 0.5 * Math.sin(t * 1.4 + i))), false)
@@ -497,7 +515,34 @@ function HeroJourney() {
 
       // Stella polare
       const R = lerp(mobile ? 11 : 15, mobile ? 20 : 30, A) * (1 + 0.04 * Math.sin(t * 1.3))
-      drawStar(ps.x, ps.y, R, 1, true)
+      if (!V || m > 0.01) drawStar(ps.x, ps.y, R, V ? m : 1, true)
+    }
+
+    function applyVideo(p) {
+      if (!videoOn) return
+      const A = ease(clamp(p / 0.25))
+      const m = ease(clamp((p - 0.74) / 0.22))
+      const key = `${A.toFixed(3)}|${m.toFixed(3)}`
+      if (key === vKey) return
+      vKey = key
+      // la stella del video parte a destra (come nel canvas) e si porta al centro
+      const tx = (1 - A) * 0.24 * w
+      const ty = lerp(-0.06, 0.023, A) * h
+      vid.style.opacity = String(1 - m)
+      vid.style.transform = `translate3d(${tx.toFixed(1)}px,${ty.toFixed(1)}px,0) scale(1.15)`
+    }
+
+    function scrubVideo(p, now) {
+      if (!videoOn) return
+      if (seeking && now - seekAt < 300) return
+      seeking = false
+      const d = vid.duration || 6
+      const t = clamp(p / 0.72) * (d - 0.05)
+      if (Math.abs(t - vid.currentTime) > 0.02) {
+        seeking = true
+        seekAt = now
+        vid.currentTime = t
+      }
     }
 
     function applyText(p) {
@@ -529,6 +574,8 @@ function HeroJourney() {
       if (Math.abs(target - cur) < 0.0004) cur = target
       draw(cur, now)
       applyText(cur)
+      applyVideo(cur)
+      scrubVideo(cur, now)
       raf = requestAnimationFrame(frame)
     }
     const kick = () => {
@@ -549,6 +596,35 @@ function HeroJourney() {
     const ro = new ResizeObserver(resize)
     ro.observe(canvas)
     document.addEventListener('visibilitychange', kick)
+
+    // Carica il video come Blob (seek affidabili) solo su desktop e senza reduced-motion
+    const onSeeked = () => {
+      seeking = false
+    }
+    const onLoaded = () => {
+      if (window.innerWidth < 768) return
+      videoOn = true
+      vKey = ''
+      vid.pause()
+      vid.style.display = 'block'
+      draw(cur, performance.now())
+      applyVideo(cur)
+    }
+    if (vid && !reduce && window.innerWidth >= 768) {
+      vid.addEventListener('seeked', onSeeked)
+      vid.addEventListener('loadeddata', onLoaded)
+      fetch(HERO_VIDEO)
+        .then((r) => {
+          if (!r.ok) throw new Error('video')
+          return r.blob()
+        })
+        .then((b) => {
+          blobUrl = URL.createObjectURL(b)
+          vid.src = blobUrl
+          vid.load()
+        })
+        .catch(() => {})
+    }
     resize()
     kick()
 
@@ -557,6 +633,11 @@ function HeroJourney() {
       io.disconnect()
       ro.disconnect()
       document.removeEventListener('visibilitychange', kick)
+      if (vid) {
+        vid.removeEventListener('seeked', onSeeked)
+        vid.removeEventListener('loadeddata', onLoaded)
+      }
+      if (blobUrl) URL.revokeObjectURL(blobUrl)
     }
   }, [])
 
@@ -568,6 +649,17 @@ function HeroJourney() {
       className="relative h-[270vh] md:h-[330vh] motion-reduce:h-auto"
     >
       <div className="sticky top-0 h-[100svh] min-h-[560px] w-full overflow-hidden bg-[radial-gradient(ellipse_at_50%_38%,#0F2B52_0%,#0A1F3C_48%,#06142A_100%)]">
+        <video
+          ref={vidRef}
+          aria-hidden="true"
+          tabIndex={-1}
+          muted
+          playsInline
+          preload="auto"
+          poster={HERO_POSTER}
+          style={{ display: 'none' }}
+          className="pointer-events-none absolute inset-0 h-full w-full object-cover will-change-transform [-webkit-mask-image:radial-gradient(ellipse_at_center,#000_42%,transparent_80%)] [mask-image:radial-gradient(ellipse_at_center,#000_42%,transparent_80%)]"
+        />
         <canvas ref={cv} className="absolute inset-0 h-full w-full motion-reduce:opacity-60" aria-hidden="true" />
         <div className="an-grain pointer-events-none absolute inset-0" aria-hidden="true" />
 
